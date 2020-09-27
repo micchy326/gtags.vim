@@ -405,8 +405,11 @@ endfunction
 "
 function! s:ExecLoad(option, long_option, pattern, flags)
     " Execute global(1) command and write the result to a temporary file.
+    let s:flags = ''
+    let s:option= ''
+    let s:pattern= ''
+
     let l:isfile = 0
-    let l:option = ''
     let l:result = ''
 
     if a:option =~# 'f'
@@ -417,54 +420,90 @@ function! s:ExecLoad(option, long_option, pattern, flags)
         endif
     endif
     if a:long_option != ''
-        let l:option = a:long_option . ' '
+        let s:option = a:long_option . ' '
     endif
-    let l:option = l:option . '--result=' . g:Gtags_Result . ' -q'
-    let l:option = l:option . s:TrimOption(a:option)
+    let s:option = s:option . '--result=' . g:Gtags_Result . ' -q'
+    let s:option = s:option . s:TrimOption(a:option)
     if l:isfile == 1
-        let l:cmd = s:GlobalCommand('--path-style=absolute') . ' ' . l:option . ' ' . g:Gtags_Shell_Quote_Char . a:pattern . g:Gtags_Shell_Quote_Char
+        let l:cmd = s:GlobalCommand('--path-style=absolute') . ' ' . s:option . ' ' . g:Gtags_Shell_Quote_Char . a:pattern . g:Gtags_Shell_Quote_Char
     else
-        let l:cmd = s:GlobalCommand('--path-style=absolute') . ' ' . l:option . 'e ' . g:Gtags_Shell_Quote_Char . a:pattern . g:Gtags_Shell_Quote_Char 
+        let l:cmd = s:GlobalCommand('--path-style=absolute') . ' ' . s:option . 'e ' . g:Gtags_Shell_Quote_Char . a:pattern . g:Gtags_Shell_Quote_Char 
     endif
 
-    let l:result = system(l:cmd)
-    if v:shell_error != 0
-        if v:shell_error != 0
-            if v:shell_error == 2
-                call s:Error('invalid arguments. please use the latest GLOBAL.')
-            elseif v:shell_error == 3
-                call s:Error('GTAGS not found.')
-            else
-                call s:Error('global command failed. command line: ' . l:cmd)
-            endif
+    let s:flags = a:flags
+    let s:pattern = a:pattern
+"    echomsg 'cmd = ' . l:cmd
+    let l:cmd = ["/bin/sh", "-c", l:cmd]
+    "let l:cmd = ["/bin/sh", "-c", 'false']
+    let job = job_start(l:cmd, {
+        \ 'close_cb': 'LoadCloseHandler',
+        \ 'exit_cb':  'LoadExitHandler',
+        \ })
+    echomsg '[GTAGS] retrieving tag info...'
+
+endfunction
+
+func! LoadExitHandler(job, exit_code)
+    if a:exit_code == 0
+        return
+    endif
+
+    if a:exit_code == 2
+        call s:Error('invalid arguments. please use the latest GLOBAL.')
+    elseif a:exit_code == 3
+        call s:Error('GTAGS not found.')
+    else
+        call s:Error('global command failed. command line: ' . join(job_info(a:job)['cmd']))
+    endif
+endfunction
+
+func! LoadCloseHandler(channel)
+    echomsg '[GTAGS] preparing quickfix list...'
+    let l:result = ''
+    while ch_status(a:channel, {'part': 'out'}) == 'buffered'
+      let l:result .= ch_read(a:channel) . "\n"
+    endwhile
+
+    if l:result == '' 
+        if s:option =~# 'f'
+            call s:Error('Tag not found in ' . s:pattern . '.')
+        elseif s:option =~# 'P'
+            call s:Error('Path which matches to ' . s:pattern . ' not found.')
+        elseif s:option =~# 'g'
+            call s:Error('Line which matches to ' . s:pattern . ' not found.')
+        else
+            call s:Error('Tag which matches to ' . g:Gtags_Shell_Quote_Char . s:pattern . g:Gtags_Shell_Quote_Char . ' not found.')
         endif
         return
     endif
-    if l:result == '' 
-        if l:option =~# 'f'
-            call s:Error('Tag not found in ' . a:pattern . '.')
-        elseif l:option =~# 'P'
-            call s:Error('Path which matches to ' . a:pattern . ' not found.')
-        elseif l:option =~# 'g'
-            call s:Error('Line which matches to ' . a:pattern . ' not found.')
-        else
-            call s:Error('Tag which matches to ' . g:Gtags_Shell_Quote_Char . a:pattern . g:Gtags_Shell_Quote_Char . ' not found.')
-        endif
-        return
+    echomsg ''
+
+    if s:option =~# '-qf'
+        let l:option_name = 'all tags'
+    elseif s:option =~# '-qP'
+        let l:option_name = 'file name'
+    elseif s:option =~# '-qg'
+        let l:option_name = 'grep'
+    elseif s:option =~# '-qr'
+        let l:option_name = 'reference'
+    elseif s:option =~# '-q'
+        let l:option_name = 'symbol'
+    else
+        let l:option_name = 'other'
     endif
 
     " Open the quickfix window
     if g:Gtags_OpenQuickfixWindow == 1
-	let l:open = 1
+        let l:open = 1
         if g:Gtags_Close_When_Single == 1
-	    let l:open = 0
-	    let l:idx = stridx(l:result, "\n")
-	    if l:idx > 0 && stridx(l:result, "\n", l:idx + 1) > 0
-		let l:open = 1
-	    endif
-	endif
-	if l:open == 0
-	    cclose
+            let l:open = 0
+            let l:idx = stridx(l:result, "\n")
+        if l:idx > 0 && stridx(l:result, "\n", l:idx + 1) > 0
+            let l:open = 1
+        endif
+    endif
+    if l:open == 0
+        cclose
         elseif g:Gtags_VerticalWindow == 1
             topleft vertical copen
         else
@@ -474,12 +513,14 @@ function! s:ExecLoad(option, long_option, pattern, flags)
     " Parse the output of 'global -x or -t' and show in the quickfix window.
     let l:efm_org = &efm
     let &efm = g:Gtags_Efm
-    if a:flags =~# 'a'
+    if s:flags =~# 'a'
         cadde l:result		" append mode
     elseif g:Gtags_No_Auto_Jump == 1
         cgete l:result		" does not jump
+        call setqflist([], 'a', {'title' : 'gtags:' . l:option_name . ':' . s:pattern})
     else
         cexpr l:result		" jump
+        call setqflist([], 'a', {'title' : 'gtags:' . l:option_name . ':' . s:pattern})
     endif
     let &efm = l:efm_org
 endfunction
